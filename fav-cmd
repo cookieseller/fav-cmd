@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+
+# fav-cmd - A favorite commands manager with fuzzy filtering
+# Dependencies: fzf
+
+set -e
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/fav-cmd"
+COMMANDS_FILE="$CONFIG_DIR/commands.txt"
+
+mkdir -p "$CONFIG_DIR"
+touch "$COMMANDS_FILE"
+
+if ! command -v fzf >/dev/null 2>&1; then
+    echo "Error: fzf is required but not installed."
+    echo "Please install fzf first:"
+    echo "  macOS: brew install fzf"
+    echo "  Ubuntu/Debian: apt install fzf"
+    echo "  Fedora: dnf install fzf"
+    echo "  Arch: pacman -S fzf"
+    exit 1
+fi
+
+add_command() {
+    local name description command
+
+    echo "Enter a name for your command:"
+    read -r name
+
+    echo "Enter a description (optional):"
+    read -r description
+
+    echo "Enter the command:"
+    read -r command
+
+    if [[ -z "$name" || -z "$command" ]]; then
+        echo "Error: Name and command are required."
+        return 1
+    fi
+
+    echo "$name|$description|$command" >> "$COMMANDS_FILE"
+    echo "Command added successfully!"
+}
+
+list_commands() {
+    if [[ ! -s "$COMMANDS_FILE" ]]; then
+        echo "No commands found. Add some commands first using 'fav-cmd add'."
+        exit 0
+    fi
+
+    # Build two parallel arrays: one for display and one for the full command line.
+    local display_lines=()
+    local full_lines=()
+    while IFS='|' read -r name description command; do
+        display=$(printf "%-30s | %-50s" "$name" "$description")
+        display_lines+=("$display")
+        full_lines+=("$name|$description|$command")
+    done < "$COMMANDS_FILE"
+
+    selection=$(printf "%s\n" "${display_lines[@]}" | fzf --height 50% --border=rounded \
+        --layout=reverse --margin=15,15,15,15 --prompt="Select command: " --info=inline \
+        --header="Favorite Commands" --color bg+:24)
+
+    if [[ -n "$selection" ]]; then
+        local selected_index
+        for i in "${!display_lines[@]}"; do
+            if [[ "${display_lines[i]}" == "$selection" ]]; then
+                selected_index=$i
+                break
+            fi
+        done
+
+        # Retrieve the corresponding full line and extract the command (third field)
+        full_line="${full_lines[$selected_index]}"
+        command=$(echo "$full_line" | awk -F'|' '{print $3}')
+        echo "$command"
+    fi
+}
+
+delete_command() {
+    if [[ ! -s "$COMMANDS_FILE" ]]; then
+        echo "No commands found. Add some commands first using 'fav-cmd add'."
+        exit 0
+    fi
+
+    local display_lines=()
+    local full_lines=()
+    while IFS='|' read -r name description command; do
+        display=$(printf "%-30s | %-50s" "$name" "$description")
+        display_lines+=("$display")
+        full_lines+=("$name|$description|$command")
+    done < "$COMMANDS_FILE"
+
+    selection=$(printf "%s\n" "${display_lines[@]}" | fzf --height 50% --border=rounded \
+        --layout=reverse --margin=15,15,15,15 --prompt="Select command to delete: " --info=inline \
+        --header="Delete Command" --color bg+:24)
+
+    if [[ -n "$selection" ]]; then
+        local selected_index
+        for i in "${!display_lines[@]}"; do
+            if [[ "${display_lines[i]}" == "$selection" ]]; then
+                selected_index=$i
+                break
+            fi
+        done
+
+        line_num=0
+        new_file=$(mktemp)
+        while IFS= read -r line; do
+            if [[ $line_num -ne $selected_index ]]; then
+                echo "$line" >> "$new_file"
+            fi
+            ((line_num++))
+        done < "$COMMANDS_FILE"
+        mv "$new_file" "$COMMANDS_FILE"
+
+        name=$(echo "${full_lines[$selected_index]}" | awk -F'|' '{print $1}')
+        echo "Command '$name' deleted successfully!"
+    fi
+}
+
+edit_commands() {
+    ${EDITOR:-vi} "$COMMANDS_FILE"
+}
+
+print_shell_function() {
+    cat << 'EOF'
+# Add this to your .bashrc or .zshrc:
+
+fc() {
+    local result=$(fav-cmd)
+    if [[ -n "$result" ]]; then
+        # Add to history
+        echo "$result" >> ~/.bash_history
+        # Load into edit buffer
+        if [[ -n "$BASH" ]]; then
+            history -s "$result"
+            echo "$result"
+        elif [[ -n "$ZSH_VERSION" ]]; then
+            print -z "$result"
+        fi
+    fi
+}
+EOF
+}
+
+create_examples() {
+    cat > "$COMMANDS_FILE" << 'EOF'
+docker-ps|Show running Docker containers|docker ps
+git-status|Check git status of current repo|git status
+find-files|Find files by name in current directory|find . -type f -name 
+ssh-server|SSH to my server|ssh user@server.example.com
+docker-compose-up|Start docker-compose services|docker-compose up -d
+system-update|Update system packages|sudo apt update && sudo apt upgrade -y
+network-scan|Scan local network|nmap -sn 192.168.1.0/24
+disk-usage|Check disk usage|df -h
+memory-usage|Check memory usage|free -h
+process-list|List processes by memory usage|ps aux --sort=-%mem | head -n 20
+git-log|Show recent git commits|git log --oneline -n 10
+EOF
+    echo "Example commands created successfully!"
+}
+
+main() {
+    case "${1:-list}" in
+        add)
+            add_command
+            ;;
+        delete)
+            delete_command
+            ;;
+        edit)
+            edit_commands
+            ;;
+        list)
+            list_commands
+            ;;
+        setup)
+            print_shell_function
+            ;;
+        examples)
+            create_examples
+            ;;
+        help)
+            echo "Usage: fav-cmd [command]"
+            echo ""
+            echo "Commands:"
+            echo "  list     List and filter commands (default)"
+            echo "  add      Add a new command"
+            echo "  delete   Delete a command"
+            echo "  edit     Edit commands file directly"
+            echo "  setup    Print shell function for better integration"
+            echo "  examples Create example commands"
+            echo "  help     Show this help message"
+            ;;
+        *)
+            list_commands
+            ;;
+    esac
+}
+
+main "$@"
